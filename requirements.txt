@@ -1,0 +1,6 @@
+gspread
+requests
+schedule
+gradio
+yt-dlp
+curl_cffi
