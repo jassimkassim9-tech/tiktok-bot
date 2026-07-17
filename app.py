@@ -1,204 +1,152 @@
-import sys
 import os
-os.environ['PYTHONUNBUFFERED'] = '1'
-sys.stdout.reconfigure(line_buffering=True)
-
-import gspread
-import requests
-import time
-import schedule
-import threading
 import json
-import logging
+import time
+import threading
+import schedule
+import requests
+import gspread
 import yt_dlp
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import gradio as gr
 
+# --- إعدادات البيئة ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+
+# روابط الـ API
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 GOOGLE_SHEET_NAME = "tiktok"
 WORKSHEET_NAME = "sheet1"
 SENT_LINKS_SHEET = "sent_links"
-WORKER_BASE_URL = "https://fragrant-snow-cfba.jassimkassim9.workers.dev"
-status_text = "البوت متوقف حالياً"
 
-def load_memory(gc):
-    try:
-        sheet = gc.open(GOOGLE_SHEET_NAME).worksheet(SENT_LINKS_SHEET)
-        return set(filter(None, sheet.col_values(1)))
-    except Exception as e:
-        print(f"خطأ في تحميل الذاكرة: {e}")
-        return set()
+status_text = "البوت قيد التشغيل..."
 
-def save_to_memory(gc, link):
-    try:
-        sheet = gc.open(GOOGLE_SHEET_NAME).worksheet(SENT_LINKS_SHEET)
-        next_row = len(sheet.col_values(1)) + 1
-        sheet.update_cell(next_row, 1, link)
-    except Exception as e:
-        print(f"خطأ في حفظ الذاكرة: {e}")
-
-def send_telegram_video(video_url, caption):
-    url = f"{WORKER_BASE_URL}/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "video": video_url, "caption": caption}
-    try:
-        requests.post(url, json=payload, timeout=60)
-        time.sleep(3)
-        return True
-    except Exception as e:
-        print(f"خطأ في إرسال الفيديو: {e}")
-        return False
-
-def send_telegram_photos(images, caption):
-    url = f"{WORKER_BASE_URL}/bot{TELEGRAM_BOT_TOKEN}/sendMediaGroup"
-    media = [{"type": "photo", "media": img} for img in images[:10]]
-    media[0]["caption"] = caption
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "media": media}
-    try:
-        requests.post(url, json=payload, timeout=60)
-        time.sleep(3)
-        return True
-    except Exception as e:
-        print(f"خطأ في إرسال الصور: {e}")
-        return False
-
+# --- الدوال المساعدة ---
 class SilentLogger:
     def debug(self, msg): pass
     def info(self, msg): pass
     def warning(self, msg): pass
     def error(self, msg): pass
 
+def load_memory(gc):
+    try:
+        sheet = gc.open(GOOGLE_SHEET_NAME).worksheet(SENT_LINKS_SHEET)
+        return set(filter(None, sheet.col_values(1)))
+    except Exception as e:
+        print(f"خطأ تحميل الذاكرة: {e}")
+        return set()
+
+def save_to_memory(gc, link):
+    try:
+        sheet = gc.open(GOOGLE_SHEET_NAME).worksheet(SENT_LINKS_SHEET)
+        sheet.append_row([link])
+    except Exception as e:
+        print(f"خطأ حفظ الذاكرة: {e}")
+
+def send_telegram_video(video_url, caption):
+    url = f"{TELEGRAM_API_URL}/sendVideo"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "video": video_url, "caption": caption, "parse_mode": "HTML"}
+    try:
+        res = requests.post(url, json=payload, timeout=60)
+        return res.status_code == 200
+    except Exception as e:
+        print(f"خطأ إرسال الفيديو: {e}")
+        return False
+
+def send_telegram_photos(images, caption):
+    url = f"{TELEGRAM_API_URL}/sendMediaGroup"
+    media = [{"type": "photo", "media": img} for img in images[:10]]
+    media[0]["caption"] = caption
+    media[0]["parse_mode"] = "HTML"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "media": json.dumps(media)}
+    try:
+        res = requests.post(url, json=payload, timeout=60)
+        return res.status_code == 200
+    except Exception as e:
+        print(f"خطأ إرسال الصور: {e}")
+        return False
+
 def fetch_tiktok_videos(username):
-    ydl_opts = {
-        'extract_flat': True,
-        'quiet': True,
-        'no_warnings': True,
-        'ignoreerrors': True,
-        'playlistend': 6,
-        'logger': SilentLogger(),
-    }
-    
+    ydl_opts = {'extract_flat': True, 'quiet': True, 'playlistend': 6, 'logger': SilentLogger()}
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f"https://www.tiktok.com/@{username}", download=False)
-            if info and 'entries' in info:
-                entries = [e for e in info['entries'] if e]
-                if entries:
-                    return entries
-        return []
-    except yt_dlp.utils.DownloadError as e:
-        err = str(e)
-        if "does not have any videos" in err:
-            print(f"   ⚪ @{username} — لا يوجد فيديوهات")
-        elif "private" in err:
-            print(f"   🔒 @{username} — حساب خاص")
-        elif "Unable to extract" in err:
-            print(f"   🔒 @{username} — حساب خاص أو مخفي")
-        else:
-            print(f"   ❌ @{username} — فشل الجلب")
-        return []
-    except Exception:
+            return info.get('entries', [])
+    except Exception as e:
+        print(f"فشل جلب فيديوهات @{username}: {e}")
         return []
 
 def fetch_tikwm_data(link):
-    for attempt in range(1, 4):
-        try:
-            res = requests.get(f"https://www.tikwm.com/api/?url={link}", timeout=15)
-            data = res.json().get('data', {})
-            if data:
-                return data
-            print(f"   ⚠️ tikwm رجع بيانات فارغة (محاولة {attempt}/3)")
-        except Exception as e:
-            print(f"   ❌ خطأ tikwm (محاولة {attempt}/3): {e}")
-        time.sleep(3 * attempt)
-    return None
+    try:
+        res = requests.get(f"https://www.tikwm.com/api/?url={link}", timeout=15)
+        return res.json().get('data')
+    except Exception as e:
+        print(f"فشل جلب بيانات TikWM: {e}")
+        return None
 
+# --- الوظيفة الرئيسية ---
 def main_job():
     global status_text
     try:
-        creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
-        if not creds_json:
+        if not GOOGLE_CREDENTIALS_JSON:
+            status_text = "خطأ: GOOGLE_CREDENTIALS_JSON مفقود"
             return
-
-        creds_dict = json.loads(creds_json)
-        gc = gspread.service_account_from_dict(creds_dict)
+        
+        creds = json.loads(GOOGLE_CREDENTIALS_JSON)
+        gc = gspread.service_account_from_dict(creds)
         sent_memory = load_memory(gc)
         
         sheet = gc.open(GOOGLE_SHEET_NAME).worksheet(WORKSHEET_NAME)
-        users = sheet.col_values(1)
-        if users and users[0].lower() == 'username':
-            users = users[1:]
-
+        users = [u for u in sheet.col_values(1) if u.lower() != 'username' and u.strip()]
+        
         for username in users:
-            username = username.strip()
-            if not username:
-                continue
-            
-            # --- بداية التعديل: إضافة try-except لكل مستخدم ---
             try:
                 print(f"\n🔍 فحص الحساب: @{username}")
                 entries = fetch_tiktok_videos(username)
                 
-                if not entries:
-                    continue
-
                 for entry in entries:
                     video_id = entry.get('id')
                     if not video_id: continue
                     link = f"https://www.tiktok.com/@{username}/video/{video_id}"
-
-                    if link in sent_memory:
-                        continue
-
+                    
+                    if link in sent_memory: continue
+                    
                     data = fetch_tikwm_data(link)
                     if not data: continue
-
-                    # ... (بقية كود الإرسال الخاص بك) ...
-                    # تأكد من أنك تضع منطق الإرسال هنا كما هو
                     
-                    sent_memory.add(link)
-                    save_to_memory(gc, link)
+                    author = data.get('music_info', {}).get('author', username)
+                    caption = f"🎥 <b>{author}</b>\n🔗 <a href='{link}'>رابط الفيديو</a>"
                     
-                    # إضافة تأخير بسيط لتجنب الحظر من تليجرام أو تيك توك
-                    time.sleep(2) 
-
+                    sent_ok = False
+                    if data.get('images'):
+                        sent_ok = send_telegram_photos(data['images'], caption)
+                    else:
+                        sent_ok = send_telegram_video(data.get('play'), caption)
+                    
+                    if sent_ok:
+                        sent_memory.add(link)
+                        save_to_memory(gc, link)
+                        time.sleep(3) # تأخير لتجنب الحظر
             except Exception as e:
-                print(f"❌ خطأ أثناء معالجة @{username}: {e}")
-                continue # هذا السطر يضمن استمرار البوت للمستخدم التالي
-            # --- نهاية التعديل ---
-
+                print(f"خطأ مع المستخدم @{username}: {e}")
+                continue
+        status_text = "تم الفحص بنجاح"
     except Exception as e:
-        status_text = f"❌ خطأ عام: {str(e)}"
+        status_text = f"خطأ عام: {e}"
         print(status_text)
 
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(status_text.encode('utf-8'))
-    def log_message(self, format, *args):
-        pass
-
-def run_server():
-    # Render يعطينا المنفذ عبر متغير PORT، إذا لم يوجد نستخدم 7860
-    port = int(os.environ.get('PORT', 7860))
-    server = HTTPServer(('0.0.0.0', port), HealthHandler)
-    print(f"✅ Web server يعمل على port {port}")
-    server.serve_forever()
-
+# --- التشغيل ---
 def run_schedule():
-    print("⏳ انتظار 30 ثانية...")
-    time.sleep(30)
     print("🚀 بدء تشغيل البوت...")
     main_job()
-    schedule.every(60).minutes.do(main_job)
+    schedule.every(30).minutes.do(main_job)
     while True:
         schedule.run_pending()
         time.sleep(1)
 
-threading.Thread(target=run_schedule, daemon=True).start()
-threading.Thread(target=run_server, daemon=True).start()
-print("✅ البوت والسيرفر يعملان في الخلفية")
-
-# ✅ هذا السطر هو الحل — يخلي الـ main thread يشتغل للأبد
-while True:
-    time.sleep(60)
+if __name__ == "__main__":
+    # تشغيل المهمة في الخلفية
+    threading.Thread(target=run_schedule, daemon=True).start()
+    # تشغيل واجهة Gradio لضمان بقاء السيرفر نشطاً
+    demo = gr.Interface(fn=lambda: status_text, inputs=[], outputs="text")
+    demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get('PORT', 7860)))
