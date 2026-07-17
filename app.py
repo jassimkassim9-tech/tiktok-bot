@@ -200,8 +200,10 @@ class HealthHandler(BaseHTTPRequestHandler):
         pass
 
 def run_server():
-    server = HTTPServer(('0.0.0.0', 7860), HealthHandler)
-    print("✅ Web server يعمل على port 7860")
+    # Render يعطينا المنفذ عبر متغير PORT، إذا لم يوجد نستخدم 7860
+    port = int(os.environ.get('PORT', 7860))
+    server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    print(f"✅ Web server يعمل على port {port}")
     server.serve_forever()
 
 def run_schedule():
