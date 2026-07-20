@@ -31,10 +31,16 @@ class SilentLogger:
 def load_memory(gc):
     try:
         sheet = gc.open(GOOGLE_SHEET_NAME).worksheet(SENT_LINKS_SHEET)
-        return set(filter(None, sheet.col_values(1)))
+        # استخدام get_all_values بدلاً من col_values لأنها أسرع وأكثر استقراراً مع الأعداد الكبيرة
+        all_rows = sheet.get_all_values()
+        # استخراج الرابط الأول من كل سطر وتصفية الخانات الفارغة
+        links = set(row[0] for row in all_rows if row and row[0].strip())
+        print(f"📦 تم تحميل {len(links)} رابط من الذاكرة بنجاح.")
+        return links
     except Exception as e:
-        print(f"خطأ تحميل الذاكرة: {e}")
-        return set()
+        print(f"❌ خطأ فادح في تحميل الذاكرة: {e}")
+        # نرجع None بدلاً من set() فارغة لكي نعرف أن هناك خطأ حقيقي حدث
+        return None
 
 def save_to_memory(gc, link):
     try:
@@ -94,7 +100,14 @@ def main_job():
         
         creds = json.loads(GOOGLE_CREDENTIALS_JSON)
         gc = gspread.service_account_from_dict(creds)
+        
+        # جلب الذاكرة
         sent_memory = load_memory(gc)
+        
+        # حماية: إذا فشل جلب الذاكرة بسبب القيود، أوقف الدورة فوراً ولا ترسل شيئاً مكرراً
+        if sent_memory is None:
+            print("⚠️ تم إيقاف الدورة مؤقتاً لعدم القدرة على قراءة الذاكرة (تجنباً للتكرار).")
+            return
         
         sheet = gc.open(GOOGLE_SHEET_NAME).worksheet(WORKSHEET_NAME)
         users = [u for u in sheet.col_values(1) if u.lower() != 'username' and u.strip()]
@@ -124,6 +137,7 @@ def main_job():
                         sent_ok = send_telegram_video(data.get('play'), caption)
                     
                     if sent_ok:
+                        print(f"   ✅ تم إرسال فيديو جديد: {link}")
                         sent_memory.add(link)
                         save_to_memory(gc, link)
                         time.sleep(3) # تأخير لتجنب الحظر
