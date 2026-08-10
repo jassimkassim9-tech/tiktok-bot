@@ -1,6 +1,7 @@
-Flask==3.0.0
-schedule==1.2.1
-requests==2.31.0
-curl_cffi==0.7.1
-gspread==6.0.0
-gradio==4.12.0
+gspread
+requests
+schedule
+gradio
+yt-dlp
+curl_cffi
+Flask
