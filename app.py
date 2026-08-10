@@ -4,8 +4,9 @@ import time
 import threading
 import schedule
 import requests
+from curl_cffi import requests as cffi_requests
 import gspread
-import yt_dlp
+import re
 import gradio as gr
 
 # --- إعدادات البيئة ---
@@ -22,12 +23,6 @@ SENT_LINKS_SHEET = "sent_links"
 status_text = "البوت قيد التشغيل..."
 
 # --- الدوال المساعدة ---
-class SilentLogger:
-    def debug(self, msg): pass
-    def info(self, msg): pass
-    def warning(self, msg): pass
-    def error(self, msg): pass
-
 def load_memory(gc):
     try:
         sheet = gc.open(GOOGLE_SHEET_NAME).worksheet(SENT_LINKS_SHEET)
@@ -73,19 +68,43 @@ def send_telegram_photos(images, caption):
         return False
 
 def fetch_tiktok_videos(username):
-    ydl_opts = {'extract_flat': True, 'quiet': True, 'playlistend': 6, 'logger': SilentLogger()}
+    url = f"https://www.tiktok.com/@{username}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"https://www.tiktok.com/@{username}", download=False)
-            return info.get('entries', [])
+        # استخدام curl_cffi متخفياً ككروم 120
+        res = cffi_requests.get(url, headers=headers, impersonate="chrome120", timeout=15, follow_redirects=True)
+        
+        # استخراج أرقام الفيديوهات (IDs) من كود صفحة البروفايل باستخدام Regex
+        video_ids = re.findall(r'/video/(\d{18,21})', res.text)
+        
+        # فلترة التكرار مع الحفاظ على الترتيب (الأحدث أولاً)
+        seen = set()
+        entries = []
+        for vid in video_ids:
+            if vid not in seen:
+                seen.add(vid)
+                entries.append({'id': vid})
+                # نكتفي بآخر 6 فيديوهات لتقليل الضغط
+                if len(entries) >= 6:
+                    break
+                    
+        return entries
     except Exception as e:
         print(f"فشل جلب فيديوهات @{username}: {e}")
         return []
 
 def fetch_tikwm_data(link):
     try:
-        res = requests.get(f"https://www.tikwm.com/api/?url={link}", timeout=15)
-        return res.json().get('data')
+        # استخدمنا cffi_requests هنا أيضاً لأن TikWM قد يحظر سيرفرات Render
+        res = cffi_requests.get(f"https://www.tikwm.com/api/?url={link}", impersonate="chrome120", timeout=15)
+        try:
+            return res.json().get('data')
+        except Exception:
+            print(f"استجابة غير صالحة من TikWM (قد يكون تم حظر الطلب): {link}")
+            return None
     except Exception as e:
         print(f"فشل جلب بيانات TikWM: {e}")
         return None
