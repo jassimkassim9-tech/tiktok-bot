@@ -3,4 +3,4 @@ requests
 schedule
 gradio
 yt-dlp
-curl_cffi
+curl_cffi==0.7.1
