@@ -172,7 +172,7 @@ def main_job():
 def run_schedule():
     print("🚀 بدء تشغيل البوت...")
     main_job()
-    schedule.every(1).minutes.do(main_job)
+    schedule.every(30).minutes.do(main_job)
     while True:
         schedule.run_pending()
         time.sleep(1)
