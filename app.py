@@ -45,14 +45,21 @@ def save_to_memory(gc, link):
     except Exception as e:
         print(f"خطأ حفظ الذاكرة: {e}")
 
-def send_telegram_video(video_url, caption):
-    url = f"{TELEGRAM_API_URL}/sendVideo"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "video": video_url, "caption": caption, "parse_mode": "HTML"}
+def send_telegram_message(text):
+    url = f"{TELEGRAM_API_URL}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID, 
+        "text": text, 
+        "parse_mode": "HTML",
+        "disable_web_page_preview": False  # للسماح لتليجرام بعرض معاينة الفيديو تلقائياً
+    }
     try:
         res = requests.post(url, json=payload, timeout=60)
+        if res.status_code != 200:
+            print(f"❌ خطأ من تيليجرام: {res.text}")
         return res.status_code == 200
     except Exception as e:
-        print(f"خطأ إرسال الفيديو: {e}")
+        print(f"❌ خطأ إرسال الرسالة: {e}")
         return False
 
 def send_telegram_photos(images, caption):
@@ -174,11 +181,8 @@ def main_job():
                     author = data.get('music_info', {}).get('author', username)
                     caption = f"🎥 <b>{author}</b>\n🔗 <a href='{link}'>رابط الفيديو</a>"
                     
-                    sent_ok = False
-                    if data.get('images'):
-                        sent_ok = send_telegram_photos(data['images'], caption)
-                    else:
-                        sent_ok = send_telegram_video(data.get('play'), caption)
+                    # إرسال الرابط مباشرة عبر الرسائل النصية مع المعاينة التلقائية
+                    sent_ok = send_telegram_message(caption)
                     
                     if sent_ok:
                         print(f"   ✅ تم إرسال فيديو جديد: {link}")
