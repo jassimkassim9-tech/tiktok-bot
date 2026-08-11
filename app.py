@@ -1,13 +1,14 @@
 import os
 import json
 import time
+import glob
+import shutil
+import tempfile
 import threading
 import schedule
 import requests
-from curl_cffi import requests as cffi_requests
-import yt_dlp
 import gspread
-import re
+import yt_dlp
 import gradio as gr
 
 # --- إعدادات البيئة ---
@@ -24,6 +25,12 @@ SENT_LINKS_SHEET = "sent_links"
 status_text = "البوت قيد التشغيل..."
 
 # --- الدوال المساعدة ---
+class SilentLogger:
+    def debug(self, msg): pass
+    def info(self, msg): pass
+    def warning(self, msg): pass
+    def error(self, msg): pass
+
 def load_memory(gc):
     try:
         sheet = gc.open(GOOGLE_SHEET_NAME).worksheet(SENT_LINKS_SHEET)
@@ -45,101 +52,99 @@ def save_to_memory(gc, link):
     except Exception as e:
         print(f"خطأ حفظ الذاكرة: {e}")
 
-def send_telegram_message(text):
-    url = f"{TELEGRAM_API_URL}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID, 
-        "text": text, 
-        "parse_mode": "HTML",
-        "disable_web_page_preview": False  # للسماح لتليجرام بعرض معاينة الفيديو تلقائياً
-    }
+def send_telegram_video_file(path, caption):
+    """يرفع ملف فيديو محلي مباشرة إلى تيليجرام (multipart) بدل تمرير رابط."""
+    url = f"{TELEGRAM_API_URL}/sendVideo"
     try:
-        res = requests.post(url, json=payload, timeout=60)
+        with open(path, "rb") as f:
+            res = requests.post(
+                url,
+                data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption, "parse_mode": "HTML"},
+                files={"video": f},
+                timeout=180,
+            )
         if res.status_code != 200:
-            print(f"❌ خطأ من تيليجرام: {res.text}")
+            print(f"⚠️ تيليجرام رفض الفيديو: {res.status_code} {res.text[:200]}")
         return res.status_code == 200
     except Exception as e:
-        print(f"❌ خطأ إرسال الرسالة: {e}")
+        print(f"خطأ إرسال الفيديو: {e}")
         return False
 
-def send_telegram_photos(images, caption):
+def send_telegram_photos_files(paths, caption):
+    """يرفع مجموعة صور محلية مباشرة إلى تيليجرام (multipart) بدل تمرير روابط."""
     url = f"{TELEGRAM_API_URL}/sendMediaGroup"
-    media = [{"type": "photo", "media": img} for img in images[:10]]
-    media[0]["caption"] = caption
-    media[0]["parse_mode"] = "HTML"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "media": json.dumps(media)}
+    media = []
+    files = {}
+    opened = []
     try:
-        res = requests.post(url, json=payload, timeout=60)
+        for i, p in enumerate(paths[:10]):
+            attach_name = f"photo{i}"
+            f = open(p, "rb")
+            opened.append(f)
+            files[attach_name] = f
+            media.append({"type": "photo", "media": f"attach://{attach_name}"})
+        media[0]["caption"] = caption
+        media[0]["parse_mode"] = "HTML"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "media": json.dumps(media)}
+        res = requests.post(url, data=payload, files=files, timeout=180)
+        if res.status_code != 200:
+            print(f"⚠️ تيليجرام رفض الصور: {res.status_code} {res.text[:200]}")
         return res.status_code == 200
     except Exception as e:
         print(f"خطأ إرسال الصور: {e}")
         return False
+    finally:
+        for f in opened:
+            f.close()
 
 def fetch_tiktok_videos(username):
-    url = f"https://www.tiktok.com/@{username}"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
+    """يجلب قائمة آخر الفيديوهات لحساب معيّن (بدون تحميل)."""
+    ydl_opts = {'extract_flat': True, 'quiet': True, 'playlistend': 6, 'logger': SilentLogger()}
     try:
-        # استخدام curl_cffi متخفياً ككروم 120
-        res = cffi_requests.get(url, headers=headers, impersonate="chrome120", timeout=15, allow_redirects=True)
-        html = res.text
-        
-        video_ids = []
-        
-        # الطريقة الأولى: استخراج البيانات من كود JSON المخفي في الصفحة (الطريقة الأقوى والأدق)
-        match = re.search(r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">(.*?)</script>', html)
-        if match:
-            try:
-                data = json.loads(match.group(1))
-                # الوصول لقائمة الفيديوهات من هيكل تيك توك الجديد
-                default_scope = data.get("__DEFAULT_SCOPE__", {})
-                user_detail = default_scope.get("webapp.user-detail", {})
-                item_list = user_detail.get("itemList", [])
-                
-                for item in item_list:
-                    if "id" in item:
-                        video_ids.append(item["id"])
-            except Exception:
-                pass # في حال فشل تحليل JSON، سينتقل للطريقة الاحتياطية
-
-        # الطريقة الثانية (احتياطية): بحث شامل عن أي رقم يتكون من 18 إلى 21 خانة بجانب كلمة id
-        if not video_ids:
-            video_ids = re.findall(r'"id":"(\d{18,21})"', html)
-            if not video_ids:
-                 video_ids = re.findall(r'/video/(\d{18,21})', html)
-            if not video_ids:
-                 video_ids = re.findall(r'video(?:Id)?["\']?\s*:\s*["\']?(\d{18,21})', html)
-                 
-        # فلترة التكرار مع الحفاظ على الترتيب
-        seen = set()
-        entries = []
-        for vid in video_ids:
-            if vid not in seen:
-                seen.add(vid)
-                entries.append({'id': vid})
-                if len(entries) >= 6: # الاكتفاء بآخر 6 فيديوهات
-                    break
-                    
-        # طباعة النتيجة لمعرفة ما يجري في الكواليس
-        if entries:
-            print(f"   => تم العثور على {len(entries)} فيديوهات.")
-        else:
-            print(f"   => ⚠️ لم يتم العثور على أي فيديوهات، أو الحساب خاص/محظور.")
-            
-        return entries
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"https://www.tiktok.com/@{username}", download=False)
+            return info.get('entries', [])
     except Exception as e:
         print(f"فشل جلب فيديوهات @{username}: {e}")
         return []
 
-def fetch_tikwm_data(link):
-    print(f"   => 🟢 تم تجهيز رابط الفيديو بنجاح (وضع الروابط المباشرة)")
-    # إرجاع الرابط الأصلي مباشرة بدون أي عمليات سحب قد تسبب الحظر
-    return {
-        'play': link,  # سنرسل رابط تيك توك الأصلي لتيليجرام مباشرة
-        'music_info': {'author': 'TikTok Video'}
+def download_post(link, workdir):
+    """
+    يحمّل منشور تيك توك (فيديو أو صور) محلياً مباشرة عبر yt-dlp،
+    بدل الاعتماد على tikwm كوسيط. يرجّع (النوع, قائمة الملفات, اسم الناشر).
+    النوع: 'video' أو 'images' أو None عند الفشل.
+    """
+    ydl_opts = {
+        'quiet': True,
+        'logger': SilentLogger(),
+        'outtmpl': os.path.join(workdir, '%(id)s.%(ext)s'),
+        'format': 'best[ext=mp4]/best',
+        'noplaylist': True,
+        'retries': 2,
     }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(link, download=True)
+    except Exception as e:
+        print(f"   ⚠️ فشل تحميل المنشور عبر yt-dlp: {e}")
+        return None, [], None
+
+    if not info:
+        return None, [], None
+
+    author = info.get('uploader') or info.get('creator') or info.get('channel')
+    post_id = info.get('id', '')
+    files = sorted(glob.glob(os.path.join(workdir, f"{post_id}*")))
+
+    videos = [f for f in files if f.lower().endswith(('.mp4', '.mov', '.webm', '.mkv'))]
+    images = [f for f in files if f.lower().endswith(('.jpg', '.jpeg', '.webp', '.png'))]
+
+    if videos:
+        return 'video', videos, author
+    elif images:
+        return 'images', images, author
+    else:
+        return None, [], author
 
 # --- الوظيفة الرئيسية ---
 def main_job():
@@ -174,21 +179,26 @@ def main_job():
                     link = f"https://www.tiktok.com/@{username}/video/{video_id}"
                     
                     if link in sent_memory: continue
-                    
-                    data = fetch_tikwm_data(link)
-                    if not data: continue
-                    
-                    author = data.get('music_info', {}).get('author', username)
-                    caption = f"🎥 <b>{author}</b>\n🔗 <a href='{link}'>رابط الفيديو</a>"
-                    
-                    # إرسال الرابط مباشرة عبر الرسائل النصية مع المعاينة التلقائية
-                    sent_ok = send_telegram_message(caption)
-                    
-                    if sent_ok:
-                        print(f"   ✅ تم إرسال فيديو جديد: {link}")
-                        sent_memory.add(link)
-                        save_to_memory(gc, link)
-                        time.sleep(3) # تأخير لتجنب الحظر
+
+                    with tempfile.TemporaryDirectory() as workdir:
+                        kind, files, author = download_post(link, workdir)
+
+                        if not kind or not files:
+                            print(f"   ⏭️ تعذّر تحميل: {link}")
+                            continue
+
+                        caption = f"🎥 <b>{author or username}</b>\n🔗 <a href='{link}'>رابط الفيديو</a>"
+
+                        if kind == 'video':
+                            sent_ok = send_telegram_video_file(files[0], caption)
+                        else:
+                            sent_ok = send_telegram_photos_files(files, caption)
+
+                        if sent_ok:
+                            print(f"   ✅ تم إرسال فيديو جديد: {link}")
+                            sent_memory.add(link)
+                            save_to_memory(gc, link)
+                            time.sleep(3) # تأخير لتجنب الحظر
             except Exception as e:
                 print(f"خطأ مع المستخدم @{username}: {e}")
                 continue
