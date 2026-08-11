@@ -76,21 +76,50 @@ def fetch_tiktok_videos(username):
     try:
         # استخدام curl_cffi متخفياً ككروم 120
         res = cffi_requests.get(url, headers=headers, impersonate="chrome120", timeout=15, allow_redirects=True)
+        html = res.text
         
-        # استخراج أرقام الفيديوهات (IDs) من كود صفحة البروفايل باستخدام Regex
-        video_ids = re.findall(r'/video/(\d{18,21})', res.text)
+        video_ids = []
         
-        # فلترة التكرار مع الحفاظ على الترتيب (الأحدث أولاً)
+        # الطريقة الأولى: استخراج البيانات من كود JSON المخفي في الصفحة (الطريقة الأقوى والأدق)
+        match = re.search(r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">(.*?)</script>', html)
+        if match:
+            try:
+                data = json.loads(match.group(1))
+                # الوصول لقائمة الفيديوهات من هيكل تيك توك الجديد
+                default_scope = data.get("__DEFAULT_SCOPE__", {})
+                user_detail = default_scope.get("webapp.user-detail", {})
+                item_list = user_detail.get("itemList", [])
+                
+                for item in item_list:
+                    if "id" in item:
+                        video_ids.append(item["id"])
+            except Exception:
+                pass # في حال فشل تحليل JSON، سينتقل للطريقة الاحتياطية
+
+        # الطريقة الثانية (احتياطية): بحث شامل عن أي رقم يتكون من 18 إلى 21 خانة بجانب كلمة id
+        if not video_ids:
+            video_ids = re.findall(r'"id":"(\d{18,21})"', html)
+            if not video_ids:
+                 video_ids = re.findall(r'/video/(\d{18,21})', html)
+            if not video_ids:
+                 video_ids = re.findall(r'video(?:Id)?["\']?\s*:\s*["\']?(\d{18,21})', html)
+                 
+        # فلترة التكرار مع الحفاظ على الترتيب
         seen = set()
         entries = []
         for vid in video_ids:
             if vid not in seen:
                 seen.add(vid)
                 entries.append({'id': vid})
-                # نكتفي بآخر 6 فيديوهات لتقليل الضغط
-                if len(entries) >= 6:
+                if len(entries) >= 6: # الاكتفاء بآخر 6 فيديوهات
                     break
                     
+        # طباعة النتيجة لمعرفة ما يجري في الكواليس
+        if entries:
+            print(f"   => تم العثور على {len(entries)} فيديوهات.")
+        else:
+            print(f"   => ⚠️ لم يتم العثور على أي فيديوهات، أو الحساب خاص/محظور.")
+            
         return entries
     except Exception as e:
         print(f"فشل جلب فيديوهات @{username}: {e}")
