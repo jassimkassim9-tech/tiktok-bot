@@ -75,7 +75,7 @@ def fetch_tiktok_videos(username):
     }
     try:
         # استخدام curl_cffi متخفياً ككروم 120
-        res = cffi_requests.get(url, headers=headers, impersonate="chrome120", timeout=15, follow_redirects=True)
+        res = cffi_requests.get(url, headers=headers, impersonate="chrome120", timeout=15, allow_redirects=True)
         
         # استخراج أرقام الفيديوهات (IDs) من كود صفحة البروفايل باستخدام Regex
         video_ids = re.findall(r'/video/(\d{18,21})', res.text)
