@@ -127,37 +127,12 @@ def fetch_tiktok_videos(username):
         return []
 
 def fetch_tikwm_data(link):
-    print(f"   => ⏳ جاري محاولة استخراج الفيديو مباشرة...")
-    
-    # إعدادات المكتبة لجلب الرابط المباشر بدون تحميله على السيرفر
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'extract_flat': False,
+    print(f"   => 🟢 تم تجهيز رابط الفيديو بنجاح (وضع الروابط المباشرة)")
+    # إرجاع الرابط الأصلي مباشرة بدون أي عمليات سحب قد تسبب الحظر
+    return {
+        'play': link,  # سنرسل رابط تيك توك الأصلي لتيليجرام مباشرة
+        'music_info': {'author': 'TikTok Video'}
     }
-    
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # استخراج بيانات الرابط
-            info_dict = ydl.extract_info(link, download=False)
-            
-            # جلب الرابط المباشر للفيديو (عادة يكون بدون علامة مائية) واسم الناشر
-            video_url = info_dict.get('url')
-            author = info_dict.get('uploader', 'Unknown')
-            
-            if video_url:
-                print(f"   => 🟢 تم استخراج الرابط المباشر للفيديو بنجاح!")
-                return {
-                    'play': video_url,
-                    'music_info': {'author': author}
-                }
-            else:
-                print(f"   => ⚠️ تم قراءة الرابط لكن لم يتم العثور على مسار الفيديو.")
-                
-    except Exception as e:
-        print(f"   => ❌ فشل الاستخراج: {e}")
-        
-    return None
 
 # --- الوظيفة الرئيسية ---
 def main_job():
