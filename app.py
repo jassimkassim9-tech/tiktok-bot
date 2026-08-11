@@ -126,16 +126,39 @@ def fetch_tiktok_videos(username):
         return []
 
 def fetch_tikwm_data(link):
+    api_url = "https://www.tikwm.com/api/"
+    
+    # إضافة ترويسات احترافية لمحاكاة متصفح يزور موقع TikWM
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Origin": "https://www.tikwm.com",
+        "Referer": "https://www.tikwm.com/"
+    }
+    
+    # إعداد الرابط بنفس الطريقة التي يعالجها الموقع
+    payload = {"url": link, "hd": 1}
+    
     try:
-        # استخدمنا cffi_requests هنا أيضاً لأن TikWM قد يحظر سيرفرات Render
-        res = cffi_requests.get(f"https://www.tikwm.com/api/?url={link}", impersonate="chrome120", timeout=15)
+        # التغيير الجذري: استخدام POST بدلاً من GET لتجنب الحظر
+        res = cffi_requests.post(api_url, data=payload, headers=headers, impersonate="chrome120", timeout=20)
+        
         try:
-            return res.json().get('data')
+            json_data = res.json()
+            if json_data.get('code') == 0:
+                return json_data.get('data')
+            else:
+                print(f"   => ⚠️ سيرفر TikWM أرجع خطأ: {json_data.get('msg')}")
+                return None
         except Exception:
-            print(f"استجابة غير صالحة من TikWM (قد يكون تم حظر الطلب): {link}")
+            print(f"   => ❌ استجابة غير صالحة، لا يزال TikWM يحظر الطلب.")
+            # سيطبع أول 150 حرف من رسالة الخطأ لمعرفة نوع الحظر بدقة إذا تكرر
+            print(f"   => 🔍 تفاصيل الخطأ: {res.text[:150]}") 
             return None
+            
     except Exception as e:
-        print(f"فشل جلب بيانات TikWM: {e}")
+        print(f"   => ❌ فشل الاتصال بموقع TikWM: {e}")
         return None
 
 # --- الوظيفة الرئيسية ---
