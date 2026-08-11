@@ -110,23 +110,25 @@ def fetch_tiktok_videos(username):
 
 def download_post(link, workdir):
     """
-    يحمّل منشور تيك توك (فيديو أو صور) محلياً مباشرة عبر yt-dlp،
+    يحمّل منشور تيك توك (فيديو أو سلايدشو صور) محلياً مباشرة عبر yt-dlp،
     بدل الاعتماد على tikwm كوسيط. يرجّع (النوع, قائمة الملفات, اسم الناشر).
     النوع: 'video' أو 'images' أو None عند الفشل.
+
+    منشورات السلايدشو غالباً لا تملك "format" فيديو حقيقي عند تيك توك،
+    والصور تكون متاحة فقط كـ thumbnails، لذلك نفحص المنشور أولاً قبل
+    تقرير طريقة التحميل المناسبة.
     """
-    ydl_opts = {
+    probe_opts = {
         'quiet': True,
         'logger': SilentLogger(),
-        'outtmpl': os.path.join(workdir, '%(id)s.%(ext)s'),
-        'format': 'best[ext=mp4]/best',
+        'skip_download': True,
         'noplaylist': True,
-        'retries': 2,
     }
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(link, download=True)
+        with yt_dlp.YoutubeDL(probe_opts) as ydl:
+            info = ydl.extract_info(link, download=False)
     except Exception as e:
-        print(f"   ⚠️ فشل تحميل المنشور عبر yt-dlp: {e}")
+        print(f"   ⚠️ فشل تحليل المنشور عبر yt-dlp: {e}")
         return None, [], None
 
     if not info:
@@ -134,17 +136,57 @@ def download_post(link, workdir):
 
     author = info.get('uploader') or info.get('creator') or info.get('channel')
     post_id = info.get('id', '')
-    files = sorted(glob.glob(os.path.join(workdir, f"{post_id}*")))
+    formats = info.get('formats') or []
+    has_real_video = any((f.get('vcodec') not in (None, 'none')) for f in formats)
 
-    videos = [f for f in files if f.lower().endswith(('.mp4', '.mov', '.webm', '.mkv'))]
-    images = [f for f in files if f.lower().endswith(('.jpg', '.jpeg', '.webp', '.png'))]
+    # الحالة 1: فيديو حقيقي -> نحمّله عادي
+    if has_real_video:
+        video_opts = {
+            'quiet': True,
+            'logger': SilentLogger(),
+            'outtmpl': os.path.join(workdir, '%(id)s.%(ext)s'),
+            'format': 'best[ext=mp4]/best',
+            'noplaylist': True,
+            'retries': 2,
+        }
+        try:
+            with yt_dlp.YoutubeDL(video_opts) as ydl:
+                ydl.download([link])
+            files = sorted(glob.glob(os.path.join(workdir, f"{post_id}*")))
+            videos = [f for f in files if f.lower().endswith(('.mp4', '.mov', '.webm', '.mkv'))]
+            if videos:
+                return 'video', videos, author
+        except Exception as e:
+            print(f"   ⚠️ فشل تحميل الفيديو: {e}")
+            # نكمل ونجرب أسلوب الصور احتياطاً
 
-    if videos:
-        return 'video', videos, author
-    elif images:
-        return 'images', images, author
-    else:
+    # الحالة 2: سلايدشو صور -> نحمّل الـ thumbnails (كل شريحة = صورة)
+    images_opts = {
+        'quiet': True,
+        'logger': SilentLogger(),
+        'outtmpl': os.path.join(workdir, '%(id)s.%(ext)s'),
+        'skip_download': True,
+        'writethumbnail': True,
+        'write_all_thumbnails': True,
+        'noplaylist': True,
+        'retries': 2,
+    }
+    try:
+        with yt_dlp.YoutubeDL(images_opts) as ydl:
+            ydl.download([link])
+    except Exception as e:
+        print(f"   ⚠️ فشل تحميل صور السلايدشو: {e}")
         return None, [], author
+
+    files = sorted(glob.glob(os.path.join(workdir, f"{post_id}*")))
+    images = [f for f in files if f.lower().endswith(('.jpg', '.jpeg', '.webp', '.png'))]
+    if images:
+        return 'images', images, author
+
+    # لم نجد لا فيديو ولا صور - نطبع بنية المعلومات للمساعدة بالتشخيص لاحقاً
+    print(f"   ❓ تعذّر تحديد نوع المنشور {link} — formats موجودة: {len(formats)}, "
+          f"thumbnails: {len(info.get('thumbnails') or [])}")
+    return None, [], author
 
 # --- الوظيفة الرئيسية ---
 def main_job():
