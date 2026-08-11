@@ -5,6 +5,7 @@ import threading
 import schedule
 import requests
 from curl_cffi import requests as cffi_requests
+import yt_dlp
 import gspread
 import re
 import gradio as gr
@@ -126,62 +127,36 @@ def fetch_tiktok_videos(username):
         return []
 
 def fetch_tikwm_data(link):
-    """
-    تم تحديث الدالة لتعمل كنظام متعدد المصادر لتخطي حظر السيرفرات السحابية
-    """
+    print(f"   => ⏳ جاري محاولة استخراج الفيديو مباشرة...")
     
-    # 1. المحاولة عبر سيرفر TiklyDown (سيرفر مفتوح ومستقر)
+    # إعدادات المكتبة لجلب الرابط المباشر بدون تحميله على السيرفر
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': False,
+    }
+    
     try:
-        res = requests.get(f"https://api.tiklydown.eu.org/api/download?url={link}", timeout=15)
-        if res.status_code == 200:
-            json_data = res.json()
-            if 'video' in json_data or 'images' in json_data:
-                data = {}
-                if 'images' in json_data and json_data['images']:
-                    # معالجة الصور إذا كان البوست عبارة عن سلايد شو
-                    if isinstance(json_data['images'][0], dict):
-                        data['images'] = [img.get('url') for img in json_data['images'] if 'url' in img]
-                    else:
-                        data['images'] = json_data['images']
-                else:
-                    data['play'] = json_data.get('video', {}).get('noWatermark')
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # استخراج بيانات الرابط
+            info_dict = ydl.extract_info(link, download=False)
+            
+            # جلب الرابط المباشر للفيديو (عادة يكون بدون علامة مائية) واسم الناشر
+            video_url = info_dict.get('url')
+            author = info_dict.get('uploader', 'Unknown')
+            
+            if video_url:
+                print(f"   => 🟢 تم استخراج الرابط المباشر للفيديو بنجاح!")
+                return {
+                    'play': video_url,
+                    'music_info': {'author': author}
+                }
+            else:
+                print(f"   => ⚠️ تم قراءة الرابط لكن لم يتم العثور على مسار الفيديو.")
                 
-                data['music_info'] = {'author': json_data.get('author', {}).get('name', 'Unknown')}
-                print("   => 🌐 تم جلب الفيديو بنجاح (عبر سيرفر TiklyDown)")
-                return data
-    except Exception:
-        pass
-
-    # 2. المحاولة عبر سيرفر AEMT (كبديل احتياطي قوي)
-    try:
-        res = requests.get(f"https://aemt.me/tiktok?url={link}", timeout=15)
-        if res.status_code == 200:
-            json_data = res.json()
-            if json_data.get('status') and json_data.get('result'):
-                result = json_data['result']
-                data = {}
-                if result.get('images'):
-                    data['images'] = result.get('images')
-                else:
-                    data['play'] = result.get('play')
-                
-                data['music_info'] = {'author': result.get('author', 'Unknown')}
-                print("   => 🌐 تم جلب الفيديو بنجاح (عبر سيرفر AEMT)")
-                return data
-    except Exception:
-        pass
-
-    # 3. المحاولة الأخيرة عبر TikWM كخط دفاع أخير
-    try:
-        res = cffi_requests.get(f"https://www.tikwm.com/api/?url={link}", impersonate="chrome120", timeout=15)
-        json_data = res.json()
-        if json_data.get('code') == 0:
-            print("   => 🌐 تم جلب الفيديو بنجاح (عبر سيرفر TikWM)")
-            return json_data.get('data')
-    except Exception:
-        pass
-
-    print(f"   => ❌ جميع السيرفرات فشلت في جلب بيانات الفيديو (قد يكون محذوفاً أو خاصاً).")
+    except Exception as e:
+        print(f"   => ❌ فشل الاستخراج: {e}")
+        
     return None
 
 # --- الوظيفة الرئيسية ---
