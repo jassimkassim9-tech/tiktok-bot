@@ -11,10 +11,15 @@ import gspread
 import yt_dlp
 import gradio as gr
 
+# --- إضافة مسار Deno لبيئة تشغيل Render لفك حماية تيك توك ---
+if "/opt/render/project/.deno/bin" not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = f"/opt/render/project/.deno/bin:{os.environ.get('PATH', '')}"
+
 # --- إعدادات البيئة ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+
 
 # روابط الـ API
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
